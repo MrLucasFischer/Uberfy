@@ -1,10 +1,14 @@
 from pyspark.sql import *
 from pyspark.sql.types import *
 from pyspark.sql.functions import *
-import pyspark
-from pyspark.sql import SparkSession
+from pyspark import SparkContext
 import traceback
+import datetime
+from datetime import datetime as dt
+import calendar
+import time
 import math
+import operator
 
 spark = SparkSession.builder.master('local[*]').appName('uberfy').getOrCreate()
 sc = spark.sparkContext
@@ -38,11 +42,24 @@ def create_row(line):
     """
         Add doc
     """
+    #Field - Array_position
+
+    #pickup_dt - 0      fare_amount - 8
+    #dropoff_dt - 1     tip_amount - 9
+    #trip_time - 2      total_amount - 10
+    #trip_distance - 3  pickup_cell - 11
+    #pickup_long - 4    dropoff_cell - 12
+    #pickup_lat - 5
+    #dropoff_long - 6
+    #dropoff_lat - 7
+    
     splitted_line = line.split(',')
-    return Row(pickup_dt = splitted_line[2], dropoff_dt = splitted_line[3], trip_time = int(splitted_line[4]), \
-    trip_distance = float(splitted_line[5]), pickup_long = float(splitted_line[6]), pickup_lat = float(splitted_line[7]), \
-    dropoff_long = float(splitted_line[8]), dropoff_lat = float(splitted_line[9]), fare_amount = float(splitted_line[11]), \
-    tip_amount = float(splitted_line[14]), total_amount = float(splitted_line[16]))
+    return (
+        splitted_line[2], splitted_line[3], int(splitted_line[4]), float(splitted_line[5]), float(splitted_line[6]), \
+        float(splitted_line[7]), float(splitted_line[8]), float(splitted_line[9]), float(splitted_line[11]), \
+        float(splitted_line[14]), float(splitted_line[16]), estimate_cellid(float(splitted_line[7]), float(splitted_line[6])),\
+        estimate_cellid(float(splitted_line[9]), float(splitted_line[8]))
+    )
 
 
 def filter_lines(line):
@@ -51,6 +68,7 @@ def filter_lines(line):
     """
     splitted_line = line.split(',')
     return (len(line) > 0) and (float(splitted_line[6]) != 0) and (float(splitted_line[8]) != 0)
+
 
 
 def estimate_cellid(lat, lon):
@@ -67,27 +85,75 @@ def estimate_cellid(lat, lon):
     cell_x = 1 + math.floor((1/2) + (lon - x0)/(s * delta_x))
     cell_y = 1 + math.floor((1/2) + (y0 - lat)/(s * delta_y))
     
-    return f"Cell {cell_x}.{cell_y}"
+    return f"{cell_x}.{cell_y}"
+
+
+
+def create_key_value(line):
+    """
+        Add doc
+    """
+
+    weekday = convert_to_weekday(line[0])
+    hour = convert_to_hour(line[0])
+    route = f"{line[11]}-{line[12]}"
+
+    return ((weekday, hour), {route: 1})
+
+
+def custom_reducer(accum, elem):
+    key, value = elem.popitem()
+    
+    if(key in accum):
+        accum[key] += value
+    else:
+        accum[key] = value
+
+    return accum
+
+def convert_to_weekday(date):
+    """
+        Function that converts a date to weekday
+    """
+    date_obj = dt.strptime(date, '%Y-%m-%d %H:%M:%S')
+    return (calendar.day_name[date_obj.weekday()]).lower()
+
+
+
+def convert_to_hour(date):
+    """
+        Function that gets the hour from a date
+    """
+    return date[11:13]
+
 
 try:
-
-    estimate_cellid_udf = udf(lambda lat, lon : estimate_cellid(float(lat), float(lon)), StringType())
 
     #read csv file (change this to the full dataset instead of just the sample)
     raw_data = sc.textFile(filename)
 
+    # convert_to_weekday_udf = udf(lambda pickup_date: convert_to_weekday(pickup_date), StringType())
+    spark.udf.register("convert_to_weekday_udf", lambda pickup_date: convert_to_weekday(pickup_date), StringType())
+    spark.udf.register("convert_to_hour_udf", lambda pickup_date: pickup_date[11:13], StringType())
+
     #Filtering out non empty lines and lines that have a pick up or drop off coordinates as 0
     non_empty_lines = raw_data.filter(lambda line: filter_lines(line))
 
-    #Creating Schema for dataframe
+    #Shapping the rdd rows
     fields = non_empty_lines.map(lambda line : create_row(line))
 
-    #Creating DataFrame
-    lines_df = spark.createDataFrame(fields)
-    
-    lines_df.select(
-        estimate_cellid_udf("pickup_lat", "pickup_long")
-    ).show(100)
+    # Filter out rows that have Cell ID's with 300 in them. They are considered as outliers (stated in http://debs.org/debs-2015-grand-challenge-taxi-trips/)
+    filtered_rdd = fields.filter(lambda row: ("300" not in row[11]) and ("300" not in row[12]))
+
+    # ((weekday, hour), {route})
+    organized_lines = filtered_rdd.map(lambda line : create_key_value(line))
+
+    grouped = organized_lines.reduceByKey(lambda accum, elem: custom_reducer(accum, elem))
+
+    top_routes = grouped.mapValues(lambda route_dict: sorted(route_dict, key = route_dict.get, reverse = True)[:10])
+
+    for a in top_routes.take(1000):
+        print(a)
 
     sc.stop()
 except:
