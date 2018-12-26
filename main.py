@@ -1,8 +1,10 @@
 from pyspark.sql import *
 from pyspark.sql.types import *
+from pyspark.sql.functions import *
 import pyspark
 from pyspark.sql import SparkSession
 import traceback
+import math
 
 spark = SparkSession.builder.master('local[*]').appName('uberfy').getOrCreate()
 sc = spark.sparkContext
@@ -33,27 +35,59 @@ filename = "./data/sorted_data.csv"
 ##------------------------------------------------------------------------------
 
 def create_row(line):
+    """
+        Add doc
+    """
     splitted_line = line.split(',')
-    return Row(pickup_dt = splitted_line[2], dropoff_dt = splitted_line[3], trip_time = splitted_line[4], \
-    trip_distance = splitted_line[5], pickup_long = splitted_line[6], pickup_lat = splitted_line[7], \
-    dropoff_long = splitted_line[8], dropoff_lat = splitted_line[9], fare_amount = splitted_line[11], tip_amount = splitted_line[14], total_amount = splitted_line[16]) #TODO CONTINUAR
+    return Row(pickup_dt = splitted_line[2], dropoff_dt = splitted_line[3], trip_time = int(splitted_line[4]), \
+    trip_distance = float(splitted_line[5]), pickup_long = float(splitted_line[6]), pickup_lat = float(splitted_line[7]), \
+    dropoff_long = float(splitted_line[8]), dropoff_lat = float(splitted_line[9]), fare_amount = float(splitted_line[11]), \
+    tip_amount = float(splitted_line[14]), total_amount = float(splitted_line[16]))
+
+
+def filter_lines(line):
+    """
+        Add doc
+    """
+    splitted_line = line.split(',')
+    return (len(line) > 0) and (float(splitted_line[6]) != 0) and (float(splitted_line[8]) != 0)
+
+
+def estimate_cellid(lat, lon):
+    """
+        Add doc
+    """
+    x0 = -74.913585 #longitude of cell 1.1
+    y0 = 41.474937  #latitude of cell 1.1
+    s = 500 #500 meters
+
+    delta_x = 0.005986 / 500.0  #Change in longitude coordinates per meter
+    delta_y = 0.004491556 /500.0    #Change in latitude coordinates per meter
+
+    cell_x = 1 + math.floor((1/2) + (lon - x0)/(s * delta_x))
+    cell_y = 1 + math.floor((1/2) + (y0 - lat)/(s * delta_y))
+    
+    return f"Cell {cell_x}.{cell_y}"
 
 try:
 
-    #read csv file (change this to the full dataset instead of just the sample)
-    raw_data = sc.textFile(filename) 
+    estimate_cellid_udf = udf(lambda lat, lon : estimate_cellid(float(lat), float(lon)), StringType())
 
-    #Filtering out non empty lines
-    non_empty_lines = raw_data.filter(lambda line : len(line) > 0)
+    #read csv file (change this to the full dataset instead of just the sample)
+    raw_data = sc.textFile(filename)
+
+    #Filtering out non empty lines and lines that have a pick up or drop off coordinates as 0
+    non_empty_lines = raw_data.filter(lambda line: filter_lines(line))
 
     #Creating Schema for dataframe
     fields = non_empty_lines.map(lambda line : create_row(line))
 
     #Creating DataFrame
     lines_df = spark.createDataFrame(fields)
-    lines_df.show(10)
-
-    #TODO create a function to map each coordinate with a cell ID
+    
+    lines_df.select(
+        estimate_cellid_udf("pickup_lat", "pickup_long")
+    ).show(100)
 
     sc.stop()
 except:
