@@ -1,6 +1,9 @@
 from pyspark.sql import *
 from pyspark.sql.types import *
 from pyspark.sql.functions import *
+from pyspark.ml.feature import VectorAssembler
+from pyspark.ml.clustering import KMeans
+from pyspark.ml.evaluation import ClusteringEvaluator
 from pyspark import SparkContext
 import traceback
 import datetime
@@ -28,13 +31,13 @@ filename = "./data/sorted_data.csv"
 # pickup_latitude	latitude coordinate of the pickup location
 # dropoff_longitude	longitude coordinate of the drop-off location
 # dropoff_latitude	latitude coordinate of the drop-off location
-# payment_type	the payment method – credit card or cash    #Not to be used
-# fare_amount	fare amount in dollars
-# surcharge	surcharge in dollars    #Not to be used
-# mta_tax	tax in dollars  #Not to be used
-# tip_amount	tip in dollars
-# tolls_amount	bridge and tunnel tolls in dollars  #Not to be used
-# total_amount	total paid amount in dollars
+# payment_type	the payment method – credit card or cash    #Not to be used #str
+# fare_amount	fare amount in dollars #float
+# surcharge	surcharge in dollars    #Not to be used #float
+# mta_tax	tax in dollars  #Not to be used #float
+# tip_amount	tip in dollars #float
+# tolls_amount	bridge and tunnel tolls in dollars  #Not to be used #float
+# total_amount	total paid amount in dollars #float
 
 ##------------------------------------------------------------------------------
 
@@ -126,36 +129,84 @@ def convert_to_hour(date):
     """
     return date[11:13]
 
+def query1():
+    try:
 
-try:
+        #read csv file (change this to the full dataset instead of just the sample)
+        raw_data = sc.textFile(filename)
 
-    #read csv file (change this to the full dataset instead of just the sample)
-    raw_data = sc.textFile(filename)
+        #Filtering out non empty lines and lines that have a pick up or drop off coordinates as 0
+        non_empty_lines = raw_data.filter(lambda line: filter_lines(line))
 
-    # convert_to_weekday_udf = udf(lambda pickup_date: convert_to_weekday(pickup_date), StringType())
-    spark.udf.register("convert_to_weekday_udf", lambda pickup_date: convert_to_weekday(pickup_date), StringType())
-    spark.udf.register("convert_to_hour_udf", lambda pickup_date: pickup_date[11:13], StringType())
+        #Shapping the rdd rows
+        fields = non_empty_lines.map(lambda line : create_row(line))
 
-    #Filtering out non empty lines and lines that have a pick up or drop off coordinates as 0
-    non_empty_lines = raw_data.filter(lambda line: filter_lines(line))
+        # Filter out rows that have Cell ID's with 300 in them. They are considered as outliers (stated in http://debs.org/debs-2015-grand-challenge-taxi-trips/)
+        filtered_rdd = fields.filter(lambda row: ("300" not in row[11]) and ("300" not in row[12]))
 
-    #Shapping the rdd rows
-    fields = non_empty_lines.map(lambda line : create_row(line))
+        # ((weekday, hour), {route})
+        organized_lines = filtered_rdd.map(lambda line : create_key_value(line))
 
-    # Filter out rows that have Cell ID's with 300 in them. They are considered as outliers (stated in http://debs.org/debs-2015-grand-challenge-taxi-trips/)
-    filtered_rdd = fields.filter(lambda row: ("300" not in row[11]) and ("300" not in row[12]))
+        grouped = organized_lines.reduceByKey(lambda accum, elem: custom_reducer(accum, elem))
 
-    # ((weekday, hour), {route})
-    organized_lines = filtered_rdd.map(lambda line : create_key_value(line))
+        top_routes = grouped.mapValues(lambda route_dict: sorted(route_dict, key = route_dict.get, reverse = True)[:10])
 
-    grouped = organized_lines.reduceByKey(lambda accum, elem: custom_reducer(accum, elem))
+        for a in top_routes.take(1000):
+            print(a)
 
-    top_routes = grouped.mapValues(lambda route_dict: sorted(route_dict, key = route_dict.get, reverse = True)[:10])
+        sc.stop()
+    except:
+        traceback.print_exc()
+        sc.stop()
 
-    for a in top_routes.take(1000):
-        print(a)
 
-    sc.stop()
-except:
-    traceback.print_exc()
-    sc.stop()
+def query3():
+    schema = StructType([
+        StructField("medallion", StringType()),
+        StructField("hack_license", StringType()),
+        StructField("pickup_datetime", StringType()),
+        StructField("dropoff_datetime", StringType()),
+        StructField("trip_time_in_secs", IntegerType()),
+        StructField("trip_distance", FloatType()),
+        StructField("pickup_longitude", FloatType()),
+        StructField("pickup_latitude", FloatType()),
+        StructField("dropoff_longitude", FloatType()),
+        StructField("dropoff_latitude", FloatType()),
+        StructField("payment_type", StringType()),
+        StructField("fare_amount", FloatType()),
+        StructField("surcharge", FloatType()),
+        StructField("mta_tax", FloatType()),
+        StructField("tip_amount", FloatType()),
+        StructField("tolls_amount", FloatType()),
+        StructField("total_amount", FloatType())
+    ])
+    
+    # Load and parse the data
+    data = spark.read.schema(schema).option("header", "false").csv("./data/sorted_data.csv")
+
+    assembler = VectorAssembler(
+        inputCols = ["pickup_latitude", "pickup_longitude"],
+        outputCol = "features"
+        )
+
+    data_prepared = assembler.transform(data)
+
+    evaluator = ClusteringEvaluator()
+
+    for i in range(11, 52, 4): #find other k values
+        kmeans = KMeans(k = i)
+
+        #Fit the data
+        model = kmeans.fit(data_prepared)
+
+        #Make predictions on fitted data
+        predictions = model.transform(data_prepared)
+
+        #Evaluate clustering by computing Silhouettes score
+        silhouette = evaluator.evaluate(predictions)
+
+        #The closer silhouette score is to 1 means the tighter the points of the same cluster are, and the farther they are from other clusters
+        #This is optimal because it means that points will all be close to just one taxi stand (saving unecessary money to create another one)
+        print(f"{i} -> {silhouette}")
+
+query3()
