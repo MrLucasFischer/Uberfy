@@ -52,7 +52,7 @@ def create_row(line):
     #trip_time - 2      total_amount - 10
     #trip_distance - 3  pickup_cell - 11
     #pickup_long - 4    dropoff_cell - 12
-    #pickup_lat - 5
+    #pickup_lat - 5     taxi_id = 13
     #dropoff_long - 6
     #dropoff_lat - 7
     
@@ -61,8 +61,33 @@ def create_row(line):
         splitted_line[2], splitted_line[3], int(splitted_line[4]), float(splitted_line[5]), float(splitted_line[6]), \
         float(splitted_line[7]), float(splitted_line[8]), float(splitted_line[9]), float(splitted_line[11]), \
         float(splitted_line[14]), float(splitted_line[16]), estimate_cellid(float(splitted_line[7]), float(splitted_line[6])),\
-        estimate_cellid(float(splitted_line[9]), float(splitted_line[8]))
+        estimate_cellid(float(splitted_line[9]), float(splitted_line[8])), splitted_line[0]
     )
+
+
+def create_row_df(line):
+    """
+        Add doc
+    """
+    #Field - Array_position
+
+    #pickup_dt - 0      fare_amount - 8
+    #dropoff_dt - 1     tip_amount - 9
+    #trip_time - 2      total_amount - 10
+    #trip_distance - 3  pickup_cell - 11
+    #pickup_long - 4    dropoff_cell - 12
+    #pickup_lat - 5     taxi_id = 13
+    #dropoff_long - 6
+    #dropoff_lat - 7
+    
+    splitted_line = line.split(',')
+    return Row(
+        pickup_dt = splitted_line[2], dropoff_dt = splitted_line[3], trip_time = int(splitted_line[4]), \
+        trip_distance = float(splitted_line[5]), pickup_long = float(splitted_line[6]), pickup_lat = float(splitted_line[7]), \
+        dropoff_long = float(splitted_line[8]), dropoff_lat = float(splitted_line[9]), fare_amount = float(splitted_line[11]), \
+        tip_amount = float(splitted_line[14]), total_amount = float(splitted_line[16]), pickup_cell = estimate_cellid(float(splitted_line[7]), float(splitted_line[6])), \
+        dropoff_cell = estimate_cellid(float(splitted_line[9]), float(splitted_line[8])), taxi_id = splitted_line[0]
+        )   
 
 
 def filter_lines(line):
@@ -102,6 +127,15 @@ def create_key_value(line):
     route = f"{line[11]}-{line[12]}"
 
     return ((weekday, hour), {route: 1})
+
+
+def create_key_value_query2(line):
+    """
+        Add doc
+    """
+    weekday = convert_to_weekday(line[0])
+    hour = convert_to_hour(line[0])
+    pass
 
 
 def custom_reducer(accum, elem):
@@ -160,7 +194,53 @@ def query1():
         sc.stop()
 
 
+
+def query2():
+    try:
+
+        #read csv file (change this to the full dataset instead of just the sample)
+        raw_data = sc.textFile(filename)
+
+        #Filtering out non empty lines and lines that have a pick up or drop off coordinates as 0
+        non_empty_lines = raw_data.filter(lambda line: filter_lines(line))
+
+        #Shapping the rdd rows
+        fields = non_empty_lines.map(lambda line : create_row_df(line))
+
+        #Creating DataFrame
+        lines_df = spark.createDataFrame(fields)
+
+        # Filter out rows that have Cell ID's with 300 in them. They are considered as outliers (stated in http://debs.org/debs-2015-grand-challenge-taxi-trips/)
+        filtered_df = lines_df.filter(~((lines_df.pickup_cell.contains("300")) | (lines_df.dropoff_cell.contains("300"))))
+
+        # Get the dropoffs of the last 15 minutes for each cell
+        # get the average of the fare
+        profit_by_area_15min = filtered_df \
+            .groupBy(window("dropoff_dt", "900 seconds"), "pickup_cell") \
+            .agg(avg(filtered_df.fare_amount + filtered_df.tip_amount).alias("median_fare")) \
+            .select("pickup_cell" ,"median_fare")
+
+
+        empty_taxis = filtered_df \
+            .groupBy(window("dropoff_dt", "900 seconds"), "dropoff_cell") \
+            .agg(countDistinct("taxi_id").alias("empty_taxis")) \
+            .select("dropoff_cell", "empty_taxis")
+
+        profit_by_area_15min.show(10)
+
+        sc.stop()
+    except:
+        traceback.print_exc()
+        sc.stop()
+
+
+
+
+
 def query3():
+    """
+        Add doc
+    """
     schema = StructType([
         StructField("medallion", StringType()),
         StructField("hack_license", StringType()),
@@ -205,8 +285,12 @@ def query3():
         #Evaluate clustering by computing Silhouettes score
         silhouette = evaluator.evaluate(predictions)
 
+        #TODO get position of prototype with best silhouette score (probably going to be the last iteration)
+
         #The closer silhouette score is to 1 means the tighter the points of the same cluster are, and the farther they are from other clusters
         #This is optimal because it means that points will all be close to just one taxi stand (saving unecessary money to create another one)
         print(f"{i} -> {silhouette}")
 
-query3()
+
+
+query2()
