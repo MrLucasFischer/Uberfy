@@ -163,6 +163,16 @@ def convert_to_hour(date):
     """
     return date[11:13]
 
+
+
+def filter_outliers(line):
+    """
+        Add doc
+    """
+    pickup_cell_x , pickup_cell_y = line[11].split(".")
+    dropoff_cell_x , dropoff_cell_y = line[12].split(".")
+    return (float(pickup_cell_x) <= 300) and (float(pickup_cell_y) <= 300) and (float(dropoff_cell_x) <= 300) and (float(dropoff_cell_y) <= 300)
+
 def query1():
     try:
 
@@ -176,7 +186,7 @@ def query1():
         fields = non_empty_lines.map(lambda line : create_row(line))
 
         # Filter out rows that have Cell ID's with 300 in them. They are considered as outliers (stated in http://debs.org/debs-2015-grand-challenge-taxi-trips/)
-        filtered_rdd = fields.filter(lambda row: ("300" not in row[11]) and ("300" not in row[12]))
+        filtered_rdd = fields.filter(lambda row: filter_outliers(row))
 
         # ((weekday, hour), {route})
         organized_lines = filtered_rdd.map(lambda line : create_key_value(line))
@@ -211,20 +221,21 @@ def query2():
         lines_df = spark.createDataFrame(fields)
 
         # Filter out rows that have Cell ID's with 300 in them. They are considered as outliers (stated in http://debs.org/debs-2015-grand-challenge-taxi-trips/)
-        filtered_df = lines_df.filter(~((lines_df.pickup_cell.contains("300")) | (lines_df.dropoff_cell.contains("300"))))
+        filtered_df = lines_df.filter(~((lines_df.pickup_cell.rlike("3\d\d")) | (lines_df.dropoff_cell.rlike("3\d\d"))))
 
         # Get the dropoffs of the last 15 minutes for each cell
         # get the average of the fare
         profit_by_area_15min = filtered_df \
             .groupBy(window("dropoff_dt", "900 seconds"), "pickup_cell") \
             .agg(avg(filtered_df.fare_amount + filtered_df.tip_amount).alias("median_fare")) \
+            .orderBy("median_fare", ascending = False) \
             .select("pickup_cell" ,"median_fare")
 
 
-        empty_taxis = filtered_df \
-            .groupBy(window("dropoff_dt", "900 seconds"), "dropoff_cell") \
-            .agg(countDistinct("taxi_id").alias("empty_taxis")) \
-            .select("dropoff_cell", "empty_taxis")
+        # empty_taxis = filtered_df \
+        #     .groupBy(window("dropoff_dt", "900 seconds"), "dropoff_cell") \
+        #     .agg(countDistinct("taxi_id").alias("empty_taxis")) \
+        #     .select("dropoff_cell", "empty_taxis")
 
         profit_by_area_15min.show(10)
 
