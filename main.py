@@ -12,6 +12,8 @@ import calendar
 import time
 import math
 import operator
+import numpy as np
+import matplotlib.pyplot as plt
 
 spark = SparkSession.builder.master('local[*]').appName('uberfy').getOrCreate()
 sc = spark.sparkContext
@@ -217,6 +219,7 @@ def convert_to_hour(date):
 
 
 
+
 def filter_outliers(structured_tuple):
     """
         Function that filters out outlier cells. Cells whos ID is above 300 are considered outliers since
@@ -232,6 +235,29 @@ def filter_outliers(structured_tuple):
     dropoff_cell_x , dropoff_cell_y = structured_tuple[12].split(".")
     return (float(pickup_cell_x) <= 300) and (float(pickup_cell_y) <= 300) and (float(dropoff_cell_x) <= 300) and (float(dropoff_cell_y) <= 300)
 
+
+def plot_cluster_validation(k_metrics):
+    """
+        Plots the different K parameter vs the silhouette score and the Sum of Square Errors for each K value
+
+        Params:
+            k_metrics - A list of tuples containing information regarding the K value and the metrics obtained for that K value
+    """
+    x_axis = k_metrics[:, 0]
+    sse = k_metrics[:, 1]
+
+    plt.figure(figsize = (11, 8))
+
+    plt.plot(x_axis, sse, "-", linewidth = 3 ,label = "SSE")
+
+    plt.xlabel("K")
+    plt.ylabel("Metrics")
+    plt.legend()
+
+    plt.savefig("images/k_metrics.png", dpi=300)
+    plt.savefig("images/k_metrics.eps", dpi=300)
+    plt.show()
+    plt.close()
 
 
 def query1():
@@ -279,6 +305,8 @@ def query1():
 
 
 
+
+
 def query2():
     try:
 
@@ -319,20 +347,17 @@ def query2():
         #     .select("dropoff_cell", "empty_taxis")
 
         profit_by_area_15min.show(2)
-        
+
         profit_by_area_15min.rdd.map(lambda row: ((row.weekday, row.hour), row.pickup_cell)).saveAsTextFile("spark_rdd_results/query2")
-        
+
         time_after = dt.now()
         seconds = (time_after - time_before).total_seconds()
         print("Execution time {} seconds".format(seconds))
 
-        sc.stop()
+        # sc.stop()
     except:
         traceback.print_exc()
-        sc.stop()
-
-
-
+        # sc.stop()
 
 
 
@@ -372,8 +397,9 @@ def query3():
     #Class used to evaluate the clusters
     evaluator = ClusteringEvaluator()
 
+    k_metrics = []
 
-    for i in [5, 31, 75]: #find other k values
+    for i in [5, 31]: #find other k values
         
         #Instanciate Kmeans class with the given K value
         kmeans = KMeans(k = i)
@@ -384,15 +410,24 @@ def query3():
         #Make predictions on fitted data
         predictions = model.transform(data_prepared)
 
-        #Evaluate clustering by computing Silhouettes score
-        silhouette = evaluator.evaluate(predictions)
+        #Evalute clustering by computing Sum of Square Errors
+        sum_square_error = model.computeCost(data_prepared)
 
-        #TODO get position of prototype with best silhouette score (probably going to be the last iteration)
+        k_metrics.append((i, sum_square_error))
 
-        #The closer silhouette score is to 1 means the tighter the points of the same cluster are, and the farther they are from other clusters
-        #This is optimal because it means that points will all be close to just one taxi stand (saving unecessary money to create another one)
-        print(f"{i} -> {silhouette}")
+        #TODO Get the prototypes positions maybe (so we can say where to put the stands) ? 
+        # To get the prototypes
+        # centers = model.clusterCenters()
+        # print("Cluster Centers: ")
+        # for center in centers:
+        #     print(center)
 
+        #TODO Do we store the results in a folder like we did with query 1 and 2 ?
 
+        #The lower the Sum of Square errors is it means the closer the points are to the prototypes, this is equivalent to
+        #the sum of the square that each person has to walk to nearest taxi stand, so minimizing it would be optimal
+        print(f"{i} -> SSE: {sum_square_error}")
+
+    plot_cluster_validation(np.array(k_metrics)) #Plot the different K values vs their silhouete scores and SSE
 
 query2()
