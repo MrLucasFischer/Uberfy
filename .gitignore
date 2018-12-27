@@ -1,1 +1,4 @@
 data/
+spark_rdd_results/
+spark-warehouse/
+.ipynb_checkpoints/
