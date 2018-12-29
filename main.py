@@ -346,6 +346,9 @@ def query2():
         #     .agg(countDistinct("taxi_id").alias("empty_taxis")) \
         #     .select("dropoff_cell", "empty_taxis")
 
+        # TODO: Mudar de average para median no cálculo do lucro
+        # TODO: Perceber o que falta nos empty_taxis e multiplicar este resultado pelo profit_by_area_15min (certo ?)
+
         profit_by_area_15min.show(2)
 
         profit_by_area_15min.rdd.map(lambda row: ((row.weekday, row.hour), row.pickup_cell)).saveAsTextFile("spark_rdd_results/query2")
