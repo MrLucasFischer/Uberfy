@@ -272,7 +272,7 @@ def query1():
         #Filtering out non empty lines and lines that have a pick up or drop off coordinates as 0
         non_empty_lines = raw_data.filter(lambda line: filter_lines(line))
 
-        #Shapping the rdd rows
+        #Shaping the rdd rows
         fields = non_empty_lines.map(lambda line : create_row(line))
 
         # Filter out rows that have Cell ID's with 300 in them. They are considered as outliers (stated in http://debs.org/debs-2015-grand-challenge-taxi-trips/)
@@ -329,7 +329,7 @@ def query2():
         #Creating DataFrame
         lines_df = spark.createDataFrame(fields)
 
-        # Filter out rows that have Cell ID's with 300 in them. They are considered as outliers (stated in http://debs.org/debs-2015-grand-challenge-taxi-trips/)
+        # Filter out rows that have Cell ID's with values >300 in them. They are considered as outliers (stated in http://debs.org/debs-2015-grand-challenge-taxi-trips/)
         filtered_df = lines_df.filter(~((lines_df.pickup_cell.rlike("3\d\d")) | (lines_df.dropoff_cell.rlike("3\d\d"))))
 
         # Get the dropoffs of the last 15 minutes for each cell
