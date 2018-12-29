@@ -310,7 +310,7 @@ def query1():
 def query2():
     try:
 
-        #timestamp to mesure the time taken
+        #timestamp to measure the time taken
         time_before = dt.now()
 
         # convert_to_weekday_udf = udf(lambda pickup_date: convert_to_weekday(pickup_date), StringType())
@@ -320,7 +320,7 @@ def query2():
         #read csv file (change this to the full dataset instead of just the sample)
         raw_data = sc.textFile(filename)
 
-        #Filtering out non empty lines and lines that have a pick up or drop off coordinates as 0
+        #Filtering out non-empty lines and lines that have a pick up or drop off coordinates as 0
         non_empty_lines = raw_data.filter(lambda line: filter_lines(line))
 
         #Shaping the rdd rows
