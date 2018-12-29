@@ -115,7 +115,25 @@ def filter_lines(line):
             True if the line passed this condition, False otherwise
     """
     splitted_line = line.split(',')
-    return (len(line) > 0) and (float(splitted_line[6]) != 0) and (float(splitted_line[8]) != 0)
+
+    lon_min = -74.916578
+    lon_max = -73.120784
+    lat_min = 40.129716
+    lat_max = 41.477183
+
+    return (
+        len(line) > 0) and \
+        (float(splitted_line[6]) != 0) and \
+        (float(splitted_line[8]) != 0 and \
+        (float(splitted_line[6]) >= lon_min) and \
+        (float(splitted_line[6]) <= lon_max) and \
+        (float(splitted_line[7]) >= lat_min) and \
+        (float(splitted_line[7]) <= lat_max) and \
+        (float(splitted_line[8]) >= lon_min) and \
+        (float(splitted_line[8]) <= lon_max) and \
+        (float(splitted_line[9]) >= lat_min) and \
+        (float(splitted_line[9]) <= lat_max)
+        )
 
 
 
@@ -218,48 +236,6 @@ def convert_to_hour(date):
     return date[11:13]
 
 
-
-
-def filter_outliers(structured_tuple):
-    """
-        Function that filters out outlier cells. Cells whos ID is above 300 are considered outliers since
-        the grid only extends to cell 300.300
-
-        Params:
-            structured_tuple - A tuple containing information of a line in the RDD
-
-        Returns:
-            True if there are no outlier cells in the input tuple, False otherwise
-    """
-    pickup_cell_x , pickup_cell_y = structured_tuple[11].split(".")
-    dropoff_cell_x , dropoff_cell_y = structured_tuple[12].split(".")
-    return (float(pickup_cell_x) <= 300) and (float(pickup_cell_y) <= 300) and (float(dropoff_cell_x) <= 300) and (float(dropoff_cell_y) <= 300)
-
-
-def plot_cluster_validation(k_metrics):
-    """
-        Plots the different K parameter vs the silhouette score and the Sum of Square Errors for each K value
-
-        Params:
-            k_metrics - A list of tuples containing information regarding the K value and the metrics obtained for that K value
-    """
-    x_axis = k_metrics[:, 0]
-    sse = k_metrics[:, 1]
-
-    plt.figure(figsize = (11, 8))
-
-    plt.plot(x_axis, sse, "-", linewidth = 3 ,label = "SSE")
-
-    plt.xlabel("K")
-    plt.ylabel("Metrics")
-    plt.legend()
-
-    plt.savefig("images/k_metrics.png", dpi=300)
-    plt.savefig("images/k_metrics.eps", dpi=300)
-    plt.show()
-    plt.close()
-
-
 def query1():
     try:
         
@@ -270,16 +246,15 @@ def query1():
         raw_data = sc.textFile(filename)
 
         #Filtering out non empty lines and lines that have a pick up or drop off coordinates as 0
+        #Also filtering lines that have coordinates that would be mapped to cells with ID greater than 300 and lower de 1
+        #These lines are considerer outliers (stated in http://debs.org/debs-2015-grand-challenge-taxi-trips/)
         non_empty_lines = raw_data.filter(lambda line: filter_lines(line))
 
         #Shaping the rdd rows
         fields = non_empty_lines.map(lambda line : create_row(line))
 
-        # Filter out rows that have Cell ID's with values >300 in them. They are considered as outliers (stated in http://debs.org/debs-2015-grand-challenge-taxi-trips/)
-        filtered_rdd = fields.filter(lambda row: filter_outliers(row))
-
         # ((weekday, hour), {route})
-        organized_lines = filtered_rdd.map(lambda line : create_key_value(line))
+        organized_lines = fields.map(lambda line : create_key_value(line))
 
         #Group all values by its key, reducing them acording to custom_reducer
         grouped = organized_lines.reduceByKey(lambda accum, elem: custom_reducer(accum, elem))
@@ -288,7 +263,7 @@ def query1():
         top_routes = grouped.mapValues(lambda route_dict: sorted(route_dict, key = route_dict.get, reverse = True)[:10])
 
         #Store the retrieved results
-        top_routes.saveAsTextFile("spark_rdd_results/query1")
+        # top_routes.saveAsTextFile("spark_rdd_results/query1")
 
         for a in top_routes.take(2):
             print(a)
@@ -296,14 +271,10 @@ def query1():
         time_after = dt.now()
         seconds = (time_after - time_before).total_seconds()
         print("Execution time {} seconds".format(seconds))
-
-
         sc.stop()
     except:
         traceback.print_exc()
         sc.stop()
-
-
 
 
 
@@ -329,19 +300,16 @@ def query2():
         #Creating DataFrame
         lines_df = spark.createDataFrame(fields)
 
-        # Filter out rows that have Cell ID's with values >300 in them. They are considered as outliers (stated in http://debs.org/debs-2015-grand-challenge-taxi-trips/)
-        filtered_df = lines_df.filter(~((lines_df.pickup_cell.rlike("3\d\d")) | (lines_df.dropoff_cell.rlike("3\d\d"))))
-
         # Get the dropoffs of the last 15 minutes for each cell
         # get the average of the fare
-        profit_by_area_15min = filtered_df \
+        profit_by_area_15min = lines_df \
             .groupBy(window("dropoff_dt", "900 seconds"), convert_to_weekday_udf("pickup_dt").alias("weekday"), convert_to_hour_udf("pickup_dt").alias("hour"), "pickup_cell") \
-            .agg(avg(filtered_df.fare_amount + filtered_df.tip_amount).alias("median_fare")) \
+            .agg(avg(lines_df.fare_amount + lines_df.tip_amount).alias("median_fare")) \
             .orderBy("median_fare", ascending = False) \
             .select("weekday", "hour", "pickup_cell")
 
 
-        # empty_taxis = filtered_df \
+        # empty_taxis = lines_df \
         #     .groupBy(window("dropoff_dt", "900 seconds"), "dropoff_cell") \
         #     .agg(countDistinct("taxi_id").alias("empty_taxis")) \
         #     .select("dropoff_cell", "empty_taxis")
@@ -388,6 +356,28 @@ def query3():
     # Load and parse the data
     data = spark.read.schema(schema).option("header", "false").csv("./data/sorted_data.csv")
 
+    #Limits to the longitudes and latitudes, everypoint that isn't between these coordinates is considered an outlier
+    lon_min = -74.916578
+    lon_max = -73.120784
+    lat_min = 40.129716
+    lat_max = 41.477183
+
+    filter_data = data.filter(
+        (data.pickup_longitude != 0) & \
+        (data.pickup_latitude != 0) & \
+        (data.dropoff_longitude != 0) & \
+        (data.dropoff_latitude != 0) & \
+        (data.pickup_longitude <= lon_max) & \
+        (data.pickup_longitude >= lon_min) & \
+        (data.pickup_latitude >= lat_min) & \
+        (data.pickup_latitude <= lat_max) & \
+        (data.dropoff_longitude <= lon_max) & \
+        (data.dropoff_longitude >= lon_min) & \
+        (data.dropoff_latitude >= lat_min) & \
+        (data.dropoff_latitude <= lat_max)
+        )
+
+
     #Define the target columns and output column
     assembler = VectorAssembler(
         inputCols = ["pickup_latitude", "pickup_longitude"],
@@ -395,42 +385,32 @@ def query3():
         )
 
     #Transform the data according to the Assembler created above
-    data_prepared = assembler.transform(data)
+    data_prepared = assembler.transform(filter_data)
 
-    #Class used to evaluate the clusters
-    evaluator = ClusteringEvaluator()
+    for i in [5, 31, 75]: #find other k values
 
-    k_metrics = []
+        centroids_file = "spark_rdd_results/query3/centroids_"+str(i)+".txt"
+        # Write results to file
+        f = open(centroids_file,"w+")
 
-    for i in [5, 31]: #find other k values
-        
         #Instanciate Kmeans class with the given K value
         kmeans = KMeans(k = i)
 
         #Fit the data
         model = kmeans.fit(data_prepared)
 
-        #Make predictions on fitted data
-        predictions = model.transform(data_prepared)
-
         #Evalute clustering by computing Sum of Square Errors
         sum_square_error = model.computeCost(data_prepared)
 
-        k_metrics.append((i, sum_square_error))
-
-        #TODO Get the prototypes positions maybe (so we can say where to put the stands) ? 
         # To get the prototypes
-        # centers = model.clusterCenters()
-        # print("Cluster Centers: ")
-        # for center in centers:
-        #     print(center)
+        centers = model.clusterCenters()
+        print("Cluster Centers: ")
+        for center in centers:
+            f.write('{:.8f}{}{:.8f}{}'.format(center[0],",",center[1],"\n"))
 
-        #TODO Do we store the results in a folder like we did with query 1 and 2 ?
+        # Close file where centroid positions are stored
+        f.close()
 
         #The lower the Sum of Square errors is it means the closer the points are to the prototypes, this is equivalent to
         #the sum of the square that each person has to walk to nearest taxi stand, so minimizing it would be optimal
         print(f"{i} -> SSE: {sum_square_error}")
-
-    plot_cluster_validation(np.array(k_metrics)) #Plot the different K values vs their silhouete scores and SSE
-
-query2()
