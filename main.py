@@ -113,6 +113,7 @@ def filter_lines(line):
     """
     splitted_line = line.split(',')
 
+    #Limits of the grid. Every point that is not between these coordinates will be considered as an outlier
     lon_min = -74.916578
     lon_max = -73.120784
     lat_min = 40.129716
