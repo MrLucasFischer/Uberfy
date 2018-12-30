@@ -330,7 +330,7 @@ def query2():
         .map(lambda line: ((convert_to_weekday(line[1]), convert_to_hour(line[1]), line[12]), 1)) \
         .reduceByKey(lambda accum , elem: accum + elem)
 
-        #First organize lines into ((weekday, hour), (fare amount + tip amount, 1))
+        #First organize lines into ((weekday, hour, cell), (fare amount + tip amount, 1))
         #Then reduce every value to the same key by summing the corresponding tuple elements
         #Then divide the first element in the value tuple by the second one
         profitability = last_15_mins \
