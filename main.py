@@ -3,7 +3,6 @@ from pyspark.sql.types import *
 from pyspark.sql.functions import *
 from pyspark.ml.feature import VectorAssembler
 from pyspark.ml.clustering import KMeans
-from pyspark.ml.evaluation import ClusteringEvaluator
 from pyspark import SparkContext
 import traceback
 import datetime
@@ -12,8 +11,6 @@ import calendar
 import time
 import math
 import operator
-import numpy as np
-import matplotlib.pyplot as plt
 
 spark = SparkSession.builder.master('local[*]').appName('uberfy').getOrCreate()
 sc = spark.sparkContext
@@ -51,7 +48,7 @@ def create_row(line):
             line - A line from the input file
 
         Rerturns:
-            A Strcutured tuple with 14 positions
+            A Structured tuple with 14 positions
     """
     #Field - Array_position
 
@@ -236,6 +233,34 @@ def convert_to_hour(date):
     return date[11:13]
 
 
+def get_last_mins(structured_tuple, last_15_min = True):
+    """
+        Function that filters lines that do not represent the last 15 minutes of an hour
+
+        Params:
+            structured_tuple - A tuple representing a line of the input file
+            last_15_min - Flag to specify if the line should be inside the last 15 minutes or inside the last 30 minutes of an hour (defaults to 15 min)
+
+        Returns:
+            True if this row has a dropoff hour inside the last x minutes of an hour, False otherwise
+    """
+    input_dropoff_mins = int(structured_tuple[1][14:16]) #Get the minutes portion of the input datetime
+
+    if(last_15_min):
+
+        #Returns true if the input line is inside the last 15 minutes of an hour
+        return input_dropoff_mins >= 45
+
+    else:
+
+        #Returns true if the input line is inside the last 30 minutes of an hour
+        return input_dropoff_mins >= 30
+
+
+    
+
+
+
 def query1():
     try:
         
@@ -271,6 +296,7 @@ def query1():
         time_after = dt.now()
         seconds = (time_after - time_before).total_seconds()
         print("Execution time {} seconds".format(seconds))
+
         sc.stop()
     except:
         traceback.print_exc()
@@ -284,10 +310,6 @@ def query2():
         #timestamp to measure the time taken
         time_before = dt.now()
 
-        # convert_to_weekday_udf = udf(lambda pickup_date: convert_to_weekday(pickup_date), StringType())
-        convert_to_weekday_udf = udf(lambda pickup_date: convert_to_weekday(pickup_date), StringType())
-        convert_to_hour_udf = udf(lambda pickup_date: pickup_date[11:13], StringType())
-
         #read csv file (change this to the full dataset instead of just the sample)
         raw_data = sc.textFile(filename)
 
@@ -295,31 +317,45 @@ def query2():
         non_empty_lines = raw_data.filter(lambda line: filter_lines(line))
 
         #Shaping the rdd rows
-        fields = non_empty_lines.map(lambda line : create_row_df(line))
+        fields = non_empty_lines.map(lambda line : create_row(line))
 
-        #Creating DataFrame
-        lines_df = spark.createDataFrame(fields)
+        #Filter every line that is not inside the last 30 minutes of a drop-off hour
+        last_30_mins = fields.filter(lambda line: get_last_mins(line, last_15_min = False))
 
-        # Get the dropoffs of the last 15 minutes for each cell
-        # get the average of the fare
-        profit_by_area_15min = lines_df \
-            .groupBy(window("dropoff_dt", "900 seconds"), convert_to_weekday_udf("pickup_dt").alias("weekday"), convert_to_hour_udf("pickup_dt").alias("hour"), "pickup_cell") \
-            .agg(avg(lines_df.fare_amount + lines_df.tip_amount).alias("median_fare")) \
-            .orderBy("median_fare", ascending = False) \
-            .select("weekday", "hour", "pickup_cell")
+        #Filter every line that is not inside the last 15 minutes of a drop-off hour
+        last_15_mins = last_30_mins.filter(lambda line: get_last_mins(line))
 
+        #Get the number of empty taxis for each area and hour of every weekday
+        empty_taxis = last_30_mins \
+        .map(lambda line: ((convert_to_weekday(line[1]), convert_to_hour(line[1]), line[12]), 1)) \
+        .reduceByKey(lambda accum , elem: accum + elem)
 
-        # empty_taxis = lines_df \
-        #     .groupBy(window("dropoff_dt", "900 seconds"), "dropoff_cell") \
-        #     .agg(countDistinct("taxi_id").alias("empty_taxis")) \
-        #     .select("dropoff_cell", "empty_taxis")
+        #First organize lines into ((weekday, hour), (fare amount + tip amount, 1))
+        #Then reduce every value to the same key by summing the corresponding tuple elements
+        #Then divide the first element in the value tuple by the second one
+        profitability = last_15_mins \
+        .map(lambda line: ((convert_to_weekday(line[1]), convert_to_hour(line[1]), line[12]), (line[8] + line[9], 1))) \
+        .reduceByKey(lambda accum, elem : (accum[0] + elem[0], accum[1] + elem[1])) \
+        .mapValues(lambda tup : tup[0] / tup[1])
 
-        # TODO: Mudar de average para median no cálculo do lucro
-        # TODO: Perceber o que falta nos empty_taxis e multiplicar este resultado pelo profit_by_area_15min (certo ?)
+        joined = empty_taxis.join(profitability).mapValues(lambda tup: tup[1] / tup[0])
 
-        profit_by_area_15min.show(2)
+        #First organize lines into ((weekday, hour), [dropoff_cell, profitability])
+        #Then reduce every value to the same key by appending the lists
+        #Then sort descendingly the list looking at position one in the value tuple (profitability)
+        #and take lines from 10 highest values        
+        #Then retrieve only the dropoff_cells for each key (weekday, hour)
+        most_profitable_areas = joined \
+        .map(lambda tup: ((tup[0][0], tup[0][1]), [(tup[0][2], tup[1])]))  \
+        .reduceByKey(lambda accum, elem : accum + elem) \
+        .mapValues(lambda tup_list: sorted(tup_list, key = lambda tup: -tup[1])[:10]) \
+        .mapValues(lambda sorted_list: [tup[0] for tup in sorted_list])
 
-        profit_by_area_15min.rdd.map(lambda row: ((row.weekday, row.hour), row.pickup_cell)).saveAsTextFile("spark_rdd_results/query2")
+        for a in most_profitable_areas.take(10):
+            print(a)
+
+        #Save results
+        most_profitable_areas.saveAsTextFile("spark_rdd_results/query2")
 
         time_after = dt.now()
         seconds = (time_after - time_before).total_seconds()
